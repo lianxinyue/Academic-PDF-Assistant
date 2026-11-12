@@ -1,14 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-学术PDF摘要与问答助手（RAG + 跨语言检索版）
-==============================================
-功能：
-    1. 上传 PDF 文件（仅支持 .pdf 格式）
-    2. 使用 pypdf 提取 PDF 文本，并预览前 1000 个字符
-    3. RAG（检索增强生成）+ 跨语言检索：
-       - 中文提问 + 英文论文时，先把中文问题翻译成学术英语
-       - 用英文问题做 TF-IDF 检索，命中对应英文文本块
-       - 把英文文本块 + 原始中文问题一起交给 DeepSeek 生成回答
+学术PDF摘要与问答助手（RAG + 跨语言 + 双路检索版）
+====================================================
 """
 
 import re
@@ -22,9 +15,9 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-chat"
 
-CHUNK_SIZE = 1000
-CHUNK_OVERLAP = 200
-TOP_K = 3
+CHUNK_SIZE = 1500        # 增大以保留表格/上下文完整性
+CHUNK_OVERLAP = 300
+TOP_K = 5
 
 
 def extract_pdf_text(pdf_file) -> str:
@@ -48,7 +41,6 @@ def split_text_into_chunks(text, chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVER
 
 
 def tokenize(text: str):
-    """轻量分词：英文数字串 + 中文单字/二字 bigram。"""
     tokens = []
     tokens.extend(re.findall(r"[a-zA-Z0-9]+", text.lower()))
     chinese_chars = re.findall(r"[\u4e00-\u9fff]", text)
@@ -59,8 +51,6 @@ def tokenize(text: str):
 
 
 class SimpleTfidfRetriever:
-    """基于 TF-IDF + 余弦相似度的轻量检索器（纯 Python + numpy）。"""
-
     def __init__(self, chunks):
         self.chunks = chunks
         self.tokenized_chunks = [tokenize(c) for c in chunks]
@@ -93,7 +83,8 @@ class SimpleTfidfRetriever:
 
         return vocab_index, idf, tfidf
 
-    def retrieve(self, query: str, k: int = TOP_K):
+    def _query_vector(self, query: str):
+        """把查询文本转成 L2 归一化的 TF-IDF 向量；无词表匹配时返回 None。"""
         query_tokens = tokenize(query)
         n_vocab = len(self.vocab_index)
         q_tf = np.zeros(n_vocab)
@@ -102,28 +93,33 @@ class SimpleTfidfRetriever:
                 q_tf[self.vocab_index[w]] += 1
 
         q_vec = q_tf * self.idf
-        q_norm = np.linalg.norm(q_vec) + 1e-9
-        q_vec = q_vec / q_norm
+        raw_norm = np.linalg.norm(q_vec)
+        if raw_norm < 1e-8:
+            return None
+        return q_vec / raw_norm
 
-        if q_norm < 1e-8:
-            return [(self.chunks[i], 0.0) for i in range(min(k, len(self.chunks)))]
-
+    def retrieve_indices(self, query: str, k: int = TOP_K):
+        """返回 (文本块下标, 相似度) 列表，便于调用方合并去重；无匹配返回空。"""
+        q_vec = self._query_vector(query)
+        if q_vec is None:
+            return []
         sims = self.matrix @ q_vec
         top_indices = np.argsort(sims)[::-1][:k]
-        return [(self.chunks[i], float(sims[i])) for i in top_indices]
+        return [(int(i), float(sims[i])) for i in top_indices]
+
+    def retrieve(self, query: str, k: int = TOP_K):
+        """返回 (文本块内容, 相似度) 列表。"""
+        return [(self.chunks[i], score) for i, score in self.retrieve_indices(query, k)]
 
 
 def translate_to_english(api_key: str, question: str) -> str:
-    """调用 DeepSeek，把中文问题翻译成学术英语（只输出英文）。"""
     client = OpenAI(api_key=api_key, base_url=DEEPSEEK_BASE_URL)
     response = client.chat.completions.create(
         model=DEEPSEEK_MODEL,
         messages=[
-            {
-                "role": "system",
-                "content": "你是一个专业的学术翻译助手。请把用户的中文学术问题翻译成英文，"
-                           "只输出英文翻译，不要输出任何解释或额外内容。",
-            },
+            {"role": "system",
+             "content": "你是一个专业的学术翻译助手。请把用户的中文学术问题翻译成英文，"
+                        "只输出英文翻译，不要输出任何解释或额外内容。"},
             {"role": "user", "content": question},
         ],
         stream=False,
@@ -132,7 +128,6 @@ def translate_to_english(api_key: str, question: str) -> str:
 
 
 def call_deepseek(api_key: str, context_text: str, question: str) -> str:
-    """基于检索到的英文文本块，回答用户最初的中文问题。"""
     client = OpenAI(api_key=api_key, base_url=DEEPSEEK_BASE_URL)
     system_prompt = (
         "你是一个专业的学术助手。下面提供了若干与问题相关的英文论文片段。\n"
@@ -155,12 +150,11 @@ def call_deepseek(api_key: str, context_text: str, question: str) -> str:
 
 def main():
     st.title("学术PDF智能助手")
-    st.caption("上传学术论文 PDF，支持中文提问、跨语言检索英文全文")
+    st.caption("上传学术论文 PDF，支持中文提问、跨语言双路检索英文全文")
 
     with st.sidebar:
         st.header("📁 上传文件")
         uploaded_file = st.file_uploader("请上传 PDF 文件", type=["pdf"], help="仅支持 .pdf 格式文件")
-
         st.header("🔑 API 设置")
         api_key = st.text_input("请输入 DeepSeek API Key", type="password",
                                 help="在 https://platform.deepseek.com 获取你的 API Key")
@@ -209,7 +203,7 @@ def main():
             if retriever is None or not chunks:
                 st.warning("⚠️ 未提取到有效的论文文本，请重新上传 PDF。")
             else:
-                # 1) 中文问题 -> 英文
+                # 1) 翻译
                 with st.spinner("正在将问题翻译成英文..."):
                     try:
                         english_question = translate_to_english(api_key, question)
@@ -217,11 +211,25 @@ def main():
                         st.error(f"❌ 问题翻译失败，请检查 API Key 与网络。\n\n错误详情：{e}")
                         st.stop()
 
-                # 2) 英文问题 -> 检索英文块
-                top_chunks = retriever.retrieve(english_question, k=TOP_K)
+                # 2) 双路检索：英文问题 + 原中文问题
+                english_results = retriever.retrieve_indices(english_question, k=TOP_K)
+                chinese_results = retriever.retrieve_indices(question, k=TOP_K)
+
+                # 合并去重：同一块只保留更高分
+                merged = {}
+                for idx, score in english_results + chinese_results:
+                    if idx not in merged or score > merged[idx]:
+                        merged[idx] = score
+
+                if not merged:
+                    top_pairs = [(i, 0.0) for i in range(min(TOP_K, len(chunks)))]
+                else:
+                    top_pairs = sorted(merged.items(), key=lambda kv: kv[1], reverse=True)[:TOP_K]
+
+                top_chunks = [(retriever.chunks[idx], score) for idx, score in top_pairs]
                 context_text = "\n\n---\n\n".join(chunk for chunk, _ in top_chunks)
 
-                # 3) 英文块 + 原中文问题 -> 生成回答
+                # 3) 生成回答
                 with st.spinner("AI 正在深度思考中..."):
                     try:
                         answer = call_deepseek(api_key, context_text, question)
@@ -229,15 +237,14 @@ def main():
                         with st.expander("🔍 查看检索到的原文片段及英文翻译"):
                             st.markdown("**🌐 翻译后的英文问题：**")
                             st.write(english_question)
-                            st.markdown(f"**📚 检索到的原文片段（共 {len(top_chunks)} 块，"
-                                        f"来自全文 {len(chunks)} 块）：**")
+                            st.markdown(f"**📚 检索到的原文片段（双路合并去重后共 "
+                                        f"{len(top_chunks)} 块，来自全文 {len(chunks)} 块）：**")
                             for i, (chunk, score) in enumerate(top_chunks, 1):
                                 st.markdown(f"**片段 {i}（相似度 {score:.4f}）**&#8203;")
                                 st.text(chunk)
 
                         st.markdown("### 💡 AI 回复")
                         st.markdown(answer)
-
                     except Exception as e:
                         st.error("❌ 调用 AI 接口时出错，请检查以下事项：\n"
                                  "1. API Key 是否正确（注意不要有多余空格）；\n"
