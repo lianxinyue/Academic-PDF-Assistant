@@ -7,15 +7,26 @@
 功能：
     1. 上传 PDF 文件（仅支持 .pdf 格式）
     2. 使用 pypdf 提取 PDF 文本，并预览前 1000 个字符
-    3. 提供 AI 问答交互界面（当前为占位实现，后续接入大模型）
+    3. 接入 DeepSeek 大模型，实现基于论文内容的 AI 问答
+
+依赖说明：
+    - streamlit : 网页框架
+    - pypdf     : PDF 文本提取
+    - openai    : 调用 DeepSeek API（DeepSeek 兼容 OpenAI 接口格式）
 
 运行方式（在命令行中执行）：
-    1. 安装依赖：pip install streamlit pypdf
+    1. 安装依赖：pip install streamlit pypdf openai
     2. 启动应用：streamlit run app.py
 """
 
 import streamlit as st
 from pypdf import PdfReader
+from openai import OpenAI
+
+
+# DeepSeek API 的固定配置（Key 不在此处配置，由用户在页面中自行填写）
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"  # DeepSeek 的接口地址
+DEEPSEEK_MODEL = "deepseek-chat"                # 使用的模型名称
 
 
 def extract_pdf_text(pdf_file) -> str:
@@ -46,13 +57,48 @@ def extract_pdf_text(pdf_file) -> str:
     return "\n\n".join(full_text)
 
 
+def call_deepseek(api_key: str, pdf_text: str, question: str) -> str:
+    """
+    调用 DeepSeek 大模型进行问答。
+
+    参数:
+        api_key  : 用户在页面中填入的 DeepSeek API Key
+        pdf_text : 截取后的论文文本（作为 System Prompt）
+        question : 用户提出的问题（作为 User Prompt）
+
+    返回:
+        str: 大模型返回的回答内容
+    """
+    # 创建 OpenAI 兼容客户端，指向 DeepSeek 的接口地址
+    client = OpenAI(api_key=api_key, base_url=DEEPSEEK_BASE_URL)
+
+    # 构造 System Prompt：让模型扮演学术助手，并给出论文内容作为背景知识
+    system_prompt = (
+        "你是一个专业的学术助手，请基于以下论文内容回答问题：\n"
+        f"{pdf_text}"
+    )
+
+    # 调用对话补全接口
+    response = client.chat.completions.create(
+        model=DEEPSEEK_MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": question},
+        ],
+        stream=False,  # 使用非流式输出，一次性拿到完整结果
+    )
+
+    # 取出模型返回的文本内容
+    return response.choices[0].message.content
+
+
 def main():
     # ==================== 页面顶部大标题 ====================
     st.title("学术PDF智能助手")
     # 在标题下方加一行灰色小字说明
     st.caption("上传学术论文 PDF，快速预览全文并提问")
 
-    # ==================== 左侧边栏：文件上传 ====================
+    # ==================== 左侧边栏：文件上传 + API Key 输入 ====================
     # 使用 with st.sidebar 把组件放进侧边栏
     with st.sidebar:
         st.header("📁 上传文件")
@@ -61,6 +107,15 @@ def main():
             "请上传 PDF 文件",
             type=["pdf"],                  # 只接受 .pdf 后缀的文件
             help="仅支持 .pdf 格式文件",    # 鼠标悬停时显示的提示
+        )
+
+        # API Key 输入框（type="password" 使输入内容以圆点遮罩显示）
+        # 重要：Key 由用户自行填写，切勿硬编码到代码中
+        st.header("🔑 API 设置")
+        api_key = st.text_input(
+            "请输入 DeepSeek API Key",
+            type="password",
+            help="在 https://platform.deepseek.com 获取你的 API Key",
         )
 
     # ==================== 主体区域上半部分：PDF 文本预览 ====================
@@ -120,16 +175,48 @@ def main():
 
     # “发送”按钮，使用 primary 类型让其更醒目
     if st.button("发送", type="primary"):
-        # 校验：问题不能为空
-        if not question.strip():
-            st.warning("请先输入问题再发送。")
+        # ---- 第一步：校验前置条件 ----
+        if uploaded_file is None:
+            # 未上传 PDF
+            st.warning("⚠️ 请先在左侧上传 PDF 文件。")
+        elif not api_key.strip():
+            # 未填写 API Key
+            st.warning("⚠️ 请先在左侧填入 DeepSeek API Key。")
+        elif not question.strip():
+            # 问题为空
+            st.warning("⚠️ 请先输入你的问题。")
         else:
-            # ============================================================
-            # 占位实现：暂未接入真实大模型 API
-            # 后续接入时，可在此处调用大模型接口，
-            # 将 question（问题）与 st.session_state["pdf_text"]（全文）一起传入
-            # ============================================================
-            st.write("正在思考中...")
+            # ---- 第二步：读取已提取的论文文本 ----
+            full_text = st.session_state.get("pdf_text", "")
+            if not full_text:
+                # 理论上不会走到这里，因为前面已判断上传了文件；
+                # 但为稳妥起见仍做一次兜底判断
+                st.warning("⚠️ 未提取到有效的论文文本，请重新上传 PDF。")
+            else:
+                # 为防止 Token 溢出，只截取前 5000 个字符作为上下文
+                pdf_context = full_text[:5000]
+
+                # 显示等待动画
+                with st.spinner("AI 正在深度思考中..."):
+                    try:
+                        # ---- 第三步：调用 DeepSeek API ----
+                        answer = call_deepseek(api_key, pdf_context, question)
+
+                        # ---- 第四步：展示大模型的回复 ----
+                        st.markdown("### 💡 AI 回复")
+                        st.markdown(answer)
+
+                    except Exception as e:
+                        # ---- 异常捕获：友好提示 ----
+                        # 常见错误：
+                        #   - API Key 填错 / 无效 -> 鉴权失败 (401)
+                        #   - 网络不通 / 超时
+                        #   - 账户余额不足 (402)
+                        st.error("❌ 调用 AI 接口时出错，请检查以下事项：\n"
+                                 "1. API Key 是否正确（注意不要有多余空格）；\n"
+                                 "2. 网络连接是否正常；\n"
+                                 "3. DeepSeek 账户余额是否充足。\n\n"
+                                 f"错误详情：{e}")
 
 
 # 程序入口
