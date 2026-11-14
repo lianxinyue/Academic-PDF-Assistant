@@ -89,7 +89,8 @@ flowchart TD
     CHAT --> TRANS --> DUAL
     DUAL --> LLM --> CHAT
 ```
-    📈 Vibe Coding 演进记录 (V1 → V6)
+    
+## 📈 Vibe Coding 演进记录 (V1 → V6)
 本项目全程采用 Vibe Coding 模式开发：以自然语言描述需求，由 AI 生成代码，人工运行验证后给出反馈。每一次升级都源自真实使用中暴露的问题，而非提前设计。
 
 V1-V3：从骨架到全文 RAG。解决截断导致读不到后文的问题，引入自研 TF-IDF 切块检索。
@@ -100,23 +101,27 @@ V5：召回率优化。扩大切块大小，引入“中英双路检索”合并
 
 V6：产品级完善。引入多文件上传对比，重构 ChatGPT 对话流 UI，增加一键重置。
 
-⚡ 10 分钟极速复现指南
-无需 GPU、无需部署向量数据库，只要一个 DeepSeek API Key。
+## ⚡ 10 分钟极速复现指南
 
-第 1 步：获取代码
+> 无需 GPU、无需部署向量数据库，只要一个 DeepSeek API Key。
 
-bash
+**第 1 步：获取代码**
+
+```bash
 git clone https://github.com/lianxinyue/Academic-PDF-Assistant.git
 cd Academic-PDF-Assistant
-第 2 步：安装依赖
+```
+**第 2 步：安装依赖**
 
-bash
+```bash
 pip install -r requirements.txt
-第 3 步：启动应用
+```
+**第 3 步：启动应用**
 
-bash
+```bash
 python -m streamlit run app.py
-第 4 步：开始提问
+```
+**第 4 步：开始提问**
 
 左侧上传一篇或多篇英文论文 PDF；
 
@@ -126,7 +131,7 @@ python -m streamlit run app.py
 
 展开折叠面板，查看 AI 到底读了哪些英文片段。
 
-🧰 技术栈
+## 🧰 技术栈
 前端框架：Streamlit
 
 文档解析：pypdf + langchain-text-splitters
@@ -135,5 +140,5 @@ python -m streamlit run app.py
 
 大模型：DeepSeek (deepseek-chat)
 
-🙋 免责声明
+## 🙋 免责声明
 本工具所有回答均由大模型基于检索到的片段生成，仅供学习研究参考，不构成任何专业建议。请务必核对引用原文后再做重要决策。
