@@ -1,0 +1,5 @@
+streamlit
+pypdf
+openai
+langchain-text-splitters
+numpy
