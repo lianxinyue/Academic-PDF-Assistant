@@ -415,15 +415,18 @@ def main():
             type=["pdf"],
             accept_multiple_files=True,   # 允许一次上传多个文件
             help="支持同时上传多个 PDF，解析后合并全文",
-        ) or []                            # 无文件时返回空列表，便于后续统一处理
-
+        ) or [] 
+                                   # 无文件时返回空列表，便于后续统一处理
         st.header("🔑 API 设置")
-        api_key = st.text_input(
-            "请输入 DeepSeek API Key",
-            type="password",
-            help="在 https://platform.deepseek.com 获取你的 API Key",
-        )
-
+        # 优先从 Streamlit Cloud 的 Secrets 读取 Key，如果没有，则显示输入框
+        default_key = st.secrets.get("DEEPSEEK_API_KEY", "")
+        if default_key:
+            api_key = default_key
+            st.success("✅ API Key 已自动配置完毕")
+        else:
+            api_key = st.text_input("请输入 DeepSeek API Key", type="password",
+                                    help="在 https://platform.deepseek.com 获取你的 API Key")
+            
         st.divider()
         # 重置按钮：清空所有缓存并重新开始
         if st.button("🗑️ 重置会话与文献"):
